@@ -1,58 +1,150 @@
-import requests
-import Adafruit_DHT
-import time
-import RPi.GPIO as GPIO
-import drivers
+from picamera import PiCamera
 from datetime import datetime
-import Adafruit_ADS1x15
+from time import sleep
+import requests
+import os
+import pyrebase
+import board
+import busio
+import adafruit_bmp280
+import adafruit_bh1750
+import adafruit_ads1x15.ads1015 as ADS
+from adafruit_ads1x15.analog_in import AnalogIn
+from datetime import datetime, timedelta
 
-display = drivers.Lcd()
-motor = 13
-chanel = 21
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(chanel, GPIO.IN)
+# Create the I2C bus
+i2c = busio.I2C(board.SCL, board.SDA)
 
-adc = Adafruit_ADS1x15.ADS1115()
-GAIN = 1
+# Create the ADC object using the I2C bus
+ads = ADS.ADS1015(i2c)
+ads.gain = 1
+# Lux sensor
+sensor = adafruit_bh1750.BH1750(i2c)
+# temp/bar sensor
+sensor2 = adafruit_bmp280.Adafruit_BMP280_I2C(i2c)
+# Create single-ended input on channel 0
+chan = AnalogIn(ads, ADS.P0)
+chan1 = AnalogIn(ads, ADS.P1)
+chan2 = AnalogIn(ads, ADS.P2)
+chan3 = AnalogIn(ads, ADS.P3)
 
-DHT_SENSOR = Adafruit_DHT.DHT11
-DHT_PIN = 4
-url="https://fathomless-dusk-03713.herokuapp.com/servitka"
-url2="https://greenhouseapp-a928f-default-rtdb.firebaseio.com/data"
-GPIO.add_event_detect(chanel, GPIO.BOTH, bouncetime=300)
-time.sleep(1)
+urlData = "https://greenhouseapp-a928f-default-rtdb.firebaseio.com/data"
+url2 = "https://greenhouseapp-a928f-default-rtdb.firebaseio.com/settings"
+print(url2)
 
-try:
+firebaseConfig = {
+    'apiKey': "AIzaSyCqiYMhVnBFlwBuboCePIiYuKYirI1O6Vk",
+    'authDomain': "greenhouseapp-a928f.firebaseapp.com",
+    'databaseURL': "https://greenhouseapp-a928f-default-rtdb.firebaseio.com",
+    'projectId': "greenhouseapp-a928f",
+    'storageBucket': "greenhouseapp-a928f.appspot.com",
+    'messagingSenderId': "770211079525",
+    'appId': "1:770211079525:web:0f03c44ca33a0ae056ed8c",
+    'measurementId': "G-S2CLPJ09XP"
+}
 
-        while True:
-                file = open("/home/pi/garden/lcd/Datalog.csv", "a")
-                humidity, temperature = Adafruit_DHT.read(DHT_SENSOR, DHT_PIN)
-                if humidity is not None and temperature is not None:
-                        display.lcd_display_string("Tep:{0:0.1f}C Vlh:{1:0.1f}%".format(temperature, humidity),1)
-                        print("Telota: {0:0.1f}°C, Vlhkost: {1:0.2f}%".format(temperature, humidity),1);
-                        water = str(int(100-(100/11056*(adc.read_adc(0, gain=GAIN)-6688))))
-                        water2 = str(int(100-(100/11056*(adc.read_adc(1, gain=GAIN)-6688))))
-                        water3 = str(int(100-(100/11056*(adc.read_adc(2, gain=GAIN)-6688))))
-                        water4 = str(int(100-(100/11056*(adc.read_adc(3, gain=GAIN)-6688))))
-                        display.lcd_display_extended_string("Water:"+water+"/"+water2+"%", 2)
-                        print(water)
-                        print(water2)
-                        print(water3)
-                        print(water4)
-                        now = datetime.now()
-                        file.write(str(now)+",   "+str(temperature)+"°C"+",   "+str(humidity)+"%"+",    "+ water+",   "+water2+",   "+water3+",   "+water4+"\n")
-                        data={"date": str(now), "temperature": float(temperature), "humidity": float(humidity), "water": water, "water2": water2, "water3": water3, "water4": water4}
-                        requests.post(url2 + ".json", json=data)
-                        time.sleep(1800)
-                else:
-                        display.lcd_display_string("Pixi zas to nejdze",1)
-                        print("Sensor failure.");
-                        time.sleep(3)
-                file.flush()
-                file.close()
+firebase = pyrebase.initialize_app(firebaseConfig)
+auth = firebase.auth()
+storage = firebase.storage()
+camera = PiCamera()
+timer = 0
+now = datetime.now()
+nextLog = now
+lastLog = now
 
-except KeyboardInterrupt:
-    # If there is a KeyboardInterrupt (when you press ctrl+c), exit the program and cleanup
-    print("Cleaning up!")
-    display.lcd_clear()
-    file.close()
+
+def authenticate():
+    response = auth.sign_in_with_email_and_password("piunit@unit.sk", "12345678")
+    token = response['idToken']
+    print(token)
+    return token;
+
+
+def getDataValues(chan, chan1, chan2, chan3, sensor, sensor2, now):
+    #     Sensor svetla
+    lux = round(sensor.lux, 2)
+    #     Sensor press/bar
+    temperature = round(sensor2.temperature, 2)
+    pressure = round(sensor2.pressure, 2)
+    altitude = round(sensor2.altitude, 2)
+
+    #     dole pravý
+    water = int(100 - (100 / 1.366 * (chan.voltage - 0.806)))
+    #     hore lavý
+    water2 = int(100 - (100 / 1.358 * (chan1.voltage - 0.796)))
+    #     horny pravý
+    water3 = int(100 - (100 / 1.348 * (chan2.voltage - 0.844)))
+    #     dolny lavý
+    water4 = int(100 - (100 / 1.398 * (chan3.voltage - 0.768)))
+    data = {"date": str(now), "water": water, "water2": water2, "water3": water3, "water4": water4, "lux": lux,
+            "temperature": temperature, "pressure": pressure, "altitude": altitude}
+    return data;
+    #added____________________________________________
+def startWatering():
+    print("insert code")
+    return True;
+
+def toggleLight(wantedState):
+    #pwm settings
+    if(wantedState):
+        #pwm cycle
+        lightState = True;
+
+    else:
+        # pwm cycle
+        lightState = False;
+
+    return lightState;
+
+def toggleHeating():
+    #sett Fan and heater settings
+
+    return True;
+#___________________________________________________
+
+
+def storePicture(x, now):
+    filename1 = "cam-" + now.strftime("%Y-%m-%d_%H.%M.%S.jpg")
+    filename = "/home/pi/Desktop/" + filename1
+    camera.start_preview()
+    sleep(5)
+    camera.capture(filename)
+    camera.stop_preview()
+    print(filename + " saved")
+    storage.child(filename1).put(filename)
+    print("Image sent")
+    os.remove(filename)
+    print("File Removed")
+    return x;
+
+
+url2 = "https://greenhouseapp-a928f-default-rtdb.firebaseio.com/settings"
+token = authenticate()
+
+while True:
+
+    try:
+        now = datetime.now()
+        begin = now.replace(hour=8, minute=0, second=0, microsecond=0)
+        stop = now.replace(hour=22, minute=0, second=0, microsecond=0)
+        r = requests.get(url2 + ".json?auth=" + token)
+        data = r.json()
+        x = data['sampling_time']
+        print(x)
+        if now < stop and now > begin:
+            if now >= nextLog:
+                lastLog = now
+                print(nextLog)
+                store = storePicture(x, now)
+                data = getDataValues(chan, chan1, chan2, chan3, sensor, sensor2, now)
+                requests.post(urlData + ".json", json=data)
+        nextLog = lastLog + timedelta(seconds=int(x))
+
+
+
+
+    except:
+        print(now)
+        token = authenticate()
+
+    sleep(1)
